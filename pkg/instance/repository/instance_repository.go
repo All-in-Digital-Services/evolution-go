@@ -116,9 +116,22 @@ func (i *instanceRepository) UpdateJid(userId string, jid string) error {
 	return i.db.Model(&instance_model.Instance{}).Where("id = ?", userId).Update("jid", jid).Error
 }
 
+// Motivos de desconexao que nao sao logout: a sessao continua valida no
+// WhatsApp e a instancia so caiu (queda do websocket, reconexao em andamento).
+// Instancia nesse estado tambem religa no boot — antes so as "connected = true"
+// religavam, e um numero que caiu pouco antes de o container reiniciar ficava
+// desligado ate alguem reconectar pela tela (TyChat, 09/11/2026). Logout e
+// falha de conexao (ConnectFailure) gravam outro motivo e continuam de fora.
+var reconnectableDisconnectReasons = []string{
+	"Reconnecting",
+	"Disconnected emitted because the websocket is closed by the server.",
+}
+
+const reconnectOnStartupCondition = "connected = ? OR (jid IS NOT NULL AND jid <> '' AND disconnect_reason IN ?)"
+
 func (i *instanceRepository) GetAllConnectedInstances() ([]*instance_model.Instance, error) {
 	var instances []*instance_model.Instance
-	err := i.db.Where("connected = ?", true).Find(&instances).Error
+	err := i.db.Where(reconnectOnStartupCondition, true, reconnectableDisconnectReasons).Find(&instances).Error
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +141,7 @@ func (i *instanceRepository) GetAllConnectedInstances() ([]*instance_model.Insta
 
 func (i *instanceRepository) GetAllConnectedInstancesByClientName(clientName string) ([]*instance_model.Instance, error) {
 	var instances []*instance_model.Instance
-	err := i.db.Where("connected = ? AND client_name = ?", true, clientName).Find(&instances).Error
+	err := i.db.Where("("+reconnectOnStartupCondition+") AND client_name = ?", true, reconnectableDisconnectReasons, clientName).Find(&instances).Error
 	if err != nil {
 		return nil, err
 	}
